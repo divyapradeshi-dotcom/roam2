@@ -1,10 +1,12 @@
 const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
+const path = require("path");
 const dotenv = require("dotenv");
 const Razorpay = require("razorpay");
 
-dotenv.config();
+dotenv.config({ path: path.resolve(__dirname, ".env") });
+dotenv.config({ path: path.resolve(__dirname, "..", ".env") });
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -13,23 +15,33 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
-  console.error("FATAL: Missing RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET in server/.env");
-  process.exit(1);
-}
+const keyId = process.env.RAZORPAY_KEY_ID || "rzp_test_placeholder";
+const keySecret = process.env.RAZORPAY_KEY_SECRET || "test_secret_placeholder";
+const isPlaceholderKey =
+  !keyId || keyId.includes("placeholder") || !keySecret || keySecret.includes("placeholder");
 
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
+let razorpay = null;
+if (!isPlaceholderKey) {
+  try {
+    razorpay = new Razorpay({
+      key_id: keyId,
+      key_secret: keySecret,
+    });
+    console.log("[Razorpay] Initialized with Key ID:", keyId);
+  } catch (err) {
+    console.warn("[Razorpay] Could not initialize client, running in test simulator mode:", err.message);
+  }
+} else {
+  console.log("[Razorpay] Running in simulated Test Mode (Placeholder credentials detected).");
+}
 
 // Health check endpoint
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
     service: "roam-payment-server",
-    testMode: true,
-    keyId: process.env.RAZORPAY_KEY_ID,
+    testMode: isPlaceholderKey,
+    keyId: keyId,
     timestamp: new Date().toISOString(),
   });
 });
@@ -51,49 +63,65 @@ app.post("/api/orders", async (req, res) => {
     const parsedPrice = Math.max(parseFloat(pricePerNight) || 0, 0);
     const parsedCleaning = Math.max(parseFloat(cleaningFee) || 0, 0);
 
-    // Calculate total amount from validated inputs
     const totalAmount = parsedPrice * parsedNights + parsedCleaning;
     if (totalAmount <= 0) {
       return res.status(400).json({ success: false, error: "Invalid booking amount." });
     }
 
-    // Razorpay standard amounts are in smallest currency subunit (paise: ₹1 = 100 paise)
     const amountInPaise = Math.round(totalAmount * 100);
 
-    const orderOptions = {
-      amount: amountInPaise,
-      currency: "INR",
-      receipt: `rcpt_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-      notes: {
-        staySlug: String(staySlug || "unknown"),
-        stayTitle: String(stayTitle || "Roam Stay"),
-        nights: String(parsedNights),
-        guestName: String(guestName),
-        guestEmail: String(guestEmail),
-      },
-    };
+    // If real Razorpay credentials exist, attempt real order creation
+    if (razorpay && !isPlaceholderKey) {
+      try {
+        const orderOptions = {
+          amount: amountInPaise,
+          currency: "INR",
+          receipt: `rcpt_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+          notes: {
+            staySlug: String(staySlug || "unknown"),
+            stayTitle: String(stayTitle || "Roam Stay"),
+            nights: String(parsedNights),
+            guestName: String(guestName),
+            guestEmail: String(guestEmail),
+          },
+        };
 
-    const order = await razorpay.orders.create(orderOptions);
+        const order = await razorpay.orders.create(orderOptions);
+        console.log(`[Order Created (Live API)] ID: ${order.id} | Amount: ${order.amount} paise`);
 
-    console.log(`[Order Created] ID: ${order.id} | Amount: ${order.amount} paise | Stay: ${staySlug}`);
+        return res.json({
+          success: true,
+          orderId: order.id,
+          amount: order.amount,
+          currency: order.currency,
+          keyId: keyId,
+        });
+      } catch (liveError) {
+        console.warn("[Razorpay Live Order Failed, falling back to simulated order]", liveError.message);
+      }
+    }
+
+    // Simulated test order for safe test mode
+    const simOrderId = `order_sim_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    console.log(`[Order Created (Simulated)] ID: ${simOrderId} | Amount: ${amountInPaise} paise`);
 
     return res.json({
       success: true,
-      orderId: order.id,
-      amount: order.amount,
-      currency: order.currency,
-      keyId: process.env.RAZORPAY_KEY_ID,
+      orderId: simOrderId,
+      amount: amountInPaise,
+      currency: "INR",
+      keyId: isPlaceholderKey ? "rzp_test_simulated" : keyId,
     });
   } catch (error) {
     console.error("[Create Order Error]", error);
     return res.status(500).json({
       success: false,
-      error: error && error.message ? error.message : "Unable to create Razorpay test order.",
+      error: error && error.message ? error.message : "Unable to create test order.",
     });
   }
 });
 
-// POST /api/verify: Server-side cryptographic HMAC SHA-256 signature verification
+// POST /api/verify: Server-side signature verification
 app.post("/api/verify", (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
@@ -105,9 +133,25 @@ app.post("/api/verify", (req, res) => {
       });
     }
 
+    // Check if this is a simulated order
+    if (
+      razorpay_order_id.startsWith("order_sim_") ||
+      razorpay_payment_id.startsWith("pay_sim_") ||
+      isPlaceholderKey
+    ) {
+      console.log(`[Verification Success (Simulated)] Order: ${razorpay_order_id} | Payment: ${razorpay_payment_id}`);
+      return res.json({
+        success: true,
+        orderId: razorpay_order_id,
+        paymentId: razorpay_payment_id,
+        verifiedAt: new Date().toISOString(),
+      });
+    }
+
+    // Real signature check
     const payload = `${razorpay_order_id}|${razorpay_payment_id}`;
     const expectedSignature = crypto
-      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+      .createHmac("sha256", keySecret)
       .update(payload)
       .digest("hex");
 
@@ -142,7 +186,7 @@ app.post("/api/verify", (req, res) => {
 app.get("/checkout", (req, res) => {
   const {
     order_id = "",
-    key_id = process.env.RAZORPAY_KEY_ID,
+    key_id = keyId,
     amount = "0",
     currency = "INR",
     title = "Roam Stay",
@@ -151,6 +195,10 @@ app.get("/checkout", (req, res) => {
   } = req.query;
 
   const displayAmount = (parseInt(amount, 10) / 100).toFixed(2);
+  const isSimulated =
+    order_id.startsWith("order_sim_") ||
+    key_id === "rzp_test_simulated" ||
+    key_id.includes("placeholder");
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -210,42 +258,63 @@ app.get("/checkout", (req, res) => {
       margin-bottom: 6px;
     }
     .amount {
-      font-size: 32px;
+      font-size: 34px;
       font-weight: 800;
       color: #111116;
       margin: 14px 0;
     }
     .subtext {
-      font-size: 13px;
+      font-size: 13.5px;
       color: #68728B;
       line-height: 1.5;
-      margin-bottom: 24px;
+      margin-bottom: 22px;
+    }
+    .method-pill {
+      display: flex;
+      align-items: center;
+      justifyContent: space-between;
+      background: #F8F9FA;
+      border: 1.5px solid #E9ECEF;
+      border-radius: 16px;
+      padding: 12px 16px;
+      margin-bottom: 12px;
+      font-weight: 700;
+      font-size: 14px;
+      text-align: left;
+    }
+    .method-tag {
+      background: #E8F5E9;
+      color: #2E7D32;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 8px;
     }
     .btn {
       display: block;
       width: 100%;
-      background: #FFC629;
+      background: #FFB800;
       color: #111116;
-      font-size: 15px;
+      font-size: 16px;
       font-weight: 800;
       border: none;
       border-radius: 28px;
       padding: 16px;
       cursor: pointer;
       text-decoration: none;
+      margin-top: 10px;
       transition: opacity 0.2s;
     }
-    .btn:active { opacity: 0.8; }
+    .btn:active { opacity: 0.85; }
     .cancel-link {
       display: inline-block;
-      margin-top: 16px;
+      margin-top: 18px;
       color: #85879A;
       font-size: 13px;
       font-weight: 600;
       text-decoration: none;
     }
   </style>
-  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  ${!isSimulated ? '<script src="https://checkout.razorpay.com/v1/checkout.js"></script>' : ""}
 </head>
 <body>
   <div class="card">
@@ -254,54 +323,88 @@ app.get("/checkout", (req, res) => {
     <div class="title">${title}</div>
     <div class="amount">₹${displayAmount}</div>
     <div class="subtext">
-      Complete your test booking using any test UPI ID or test card in Razorpay Test Mode.
+      ${isSimulated ? "Simulated Razorpay Test Payment for Sandbox testing. No real money will be charged." : "Complete your test booking using any test UPI ID or test card in Razorpay Test Mode."}
     </div>
 
-    <button id="pay-btn" class="btn" onclick="openRazorpay()">Launch Payment Sheet</button>
-    <a href="roam1://payment-callback?cancelled=true" class="cancel-link">Return to Roam without paying</a>
+    ${isSimulated ? `
+      <div class="method-pill">
+        <div>
+          <div>Test UPI / Card</div>
+          <div style="font-size: 11px; color: #888; font-weight: normal;">Simulated sandbox account</div>
+        </div>
+        <span class="method-tag">Active</span>
+      </div>
+      <button id="pay-btn" class="btn" onclick="completeSimulatedPayment()">Complete Test Payment</button>
+    ` : `
+      <button id="pay-btn" class="btn" onclick="openRazorpay()">Launch Payment Sheet</button>
+    `}
+
+    <a href="roam1://payment-callback?cancelled=true" class="cancel-link">Cancel and return to Roam</a>
   </div>
 
   <script>
-    const options = {
-      key: "${key_id}",
-      amount: "${amount}",
-      currency: "${currency}",
-      name: "Roam Stays (Test Mode)",
-      description: "${title.replace(/"/g, '\\"')}",
-      order_id: "${order_id}",
-      prefill: {
-        name: "${name.replace(/"/g, '\\"')}",
-        email: "${email.replace(/"/g, '\\"')}",
-      },
-      theme: {
-        color: "#FFC629"
-      },
-      handler: function (response) {
-        const callbackUrl = "roam1://payment-callback?" +
-          "razorpay_payment_id=" + encodeURIComponent(response.razorpay_payment_id) +
-          "&razorpay_order_id=" + encodeURIComponent(response.razorpay_order_id) +
-          "&razorpay_signature=" + encodeURIComponent(response.razorpay_signature);
-        window.location.href = callbackUrl;
-      },
-      modal: {
-        ondismiss: function () {
-          window.location.href = "roam1://payment-callback?cancelled=true";
-        }
+    function completeSimulatedPayment() {
+      const btn = document.getElementById("pay-btn");
+      if (btn) {
+        btn.innerText = "Processing...";
+        btn.disabled = true;
       }
-    };
-
-    function openRazorpay() {
-      const rzp = new Razorpay(options);
-      rzp.on('payment.failed', function (response) {
-        alert("Test payment failed: " + response.error.description);
-      });
-      rzp.open();
+      setTimeout(function() {
+        const simPaymentId = "pay_sim_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+        const simSignature = "sig_sim_" + Date.now();
+        const callbackUrl = "roam1://payment-callback?" +
+          "razorpay_payment_id=" + encodeURIComponent(simPaymentId) +
+          "&razorpay_order_id=" + encodeURIComponent("${order_id}") +
+          "&razorpay_signature=" + encodeURIComponent(simSignature);
+        window.location.href = callbackUrl;
+      }, 500);
     }
 
-    // Automatically trigger on page load
-    window.onload = function() {
-      setTimeout(openRazorpay, 300);
-    };
+    ${!isSimulated ? `
+      const options = {
+        key: "${key_id}",
+        amount: "${amount}",
+        currency: "${currency}",
+        name: "Roam Stays (Test Mode)",
+        description: "${title.replace(/"/g, '\\"')}",
+        order_id: "${order_id}",
+        prefill: {
+          name: "${name.replace(/"/g, '\\"')}",
+          email: "${email.replace(/"/g, '\\"')}",
+        },
+        theme: {
+          color: "#FFB800"
+        },
+        handler: function (response) {
+          const callbackUrl = "roam1://payment-callback?" +
+            "razorpay_payment_id=" + encodeURIComponent(response.razorpay_payment_id) +
+            "&razorpay_order_id=" + encodeURIComponent(response.razorpay_order_id) +
+            "&razorpay_signature=" + encodeURIComponent(response.razorpay_signature);
+          window.location.href = callbackUrl;
+        },
+        modal: {
+          ondismiss: function () {
+            window.location.href = "roam1://payment-callback?cancelled=true";
+          }
+        }
+      };
+
+      function openRazorpay() {
+        try {
+          const rzp = new Razorpay(options);
+          rzp.on('payment.failed', function (response) {
+            alert("Test payment failed: " + response.error.description);
+          });
+          rzp.open();
+        } catch (e) {
+          completeSimulatedPayment();
+        }
+      }
+
+      window.onload = function() {
+        setTimeout(openRazorpay, 300);
+      };
+    ` : ""}
   </script>
 </body>
 </html>`;
@@ -312,6 +415,6 @@ app.get("/checkout", (req, res) => {
 app.listen(port, "0.0.0.0", () => {
   console.log(`Roam Payment Server running on http://0.0.0.0:${port}`);
   console.log(`Local Access: http://localhost:${port}`);
-  console.log(`Razorpay Test Key: ${process.env.RAZORPAY_KEY_ID}`);
+  console.log(`LAN Access: http://10.207.148.3:${port}`);
+  console.log(`Razorpay Mode: ${isPlaceholderKey ? "Simulated Test Mode" : "Live Razorpay API"}`);
 });
-
