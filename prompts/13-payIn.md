@@ -1,3 +1,4 @@
+
 Roam — Razorpay Test Payment Integration Requirements
 Status: Approved requirements for implementation planning
 Scope: Test-mode payment integration only

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -10,12 +10,23 @@ import {
   TextInput,
   View,
 } from "react-native";
+import * as Linking from "expo-linking";
+import * as WebBrowser from "expo-web-browser";
 import Svg, { Circle, Line, Path, Rect } from "react-native-svg";
 import { useAuth, useSignIn, useSignUp, useSSO } from "@clerk/expo";
 import { Redirect, router, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { posthog } from "@/lib/posthog";
 import { posthogLogs } from "@/lib/posthog-logs";
+
+function useWarmUpBrowser() {
+  useEffect(() => {
+    void WebBrowser.warmUpAsync();
+    return () => {
+      void WebBrowser.coolDownAsync();
+    };
+  }, []);
+}
 
 type AuthStep = "signup" | "verify" | "signin";
 type VerificationFlow = "signup" | "signin";
@@ -198,6 +209,7 @@ function AppleLogo({ size = 20, color = "#111116" }: { size?: number; color?: st
 }
 
 export default function AuthScreen() {
+  useWarmUpBrowser();
   const { mode } = useLocalSearchParams<{ mode?: string }>();
   const { isLoaded: authLoaded, isSignedIn } = useAuth();
   const { signIn, fetchStatus: signInFetchStatus } = useSignIn();
@@ -402,13 +414,20 @@ export default function AuthScreen() {
     clearMessages();
     setIsGoogleBusy(true);
     try {
-      const { createdSessionId, setActive, signUp: pendingSignUp } = await startSSOFlow({
+      const redirectUrl = Linking.createURL("sso-callback");
+      console.log("[Google Auth] Initiating SSO with redirectUrl:", redirectUrl);
+
+      const result = await startSSOFlow({
         strategy: "oauth_google",
-        unsafeMetadata: isSignUp ? { fullName: fullName.trim() } : undefined,
+        redirectUrl,
+        unsafeMetadata: isSignUp && fullName.trim() ? { fullName: fullName.trim() } : undefined,
       });
-      if (createdSessionId) {
-        if (setActive) {
-          await setActive({ session: createdSessionId });
+
+      console.log("[Google Auth] Result:", JSON.stringify(result, null, 2));
+
+      if (result.createdSessionId) {
+        if (result.setActive) {
+          await result.setActive({ session: result.createdSessionId });
         }
         const authenticationFlow = isSignUp ? "signup" : "signin";
         posthog?.capture("authentication_completed", {
@@ -417,14 +436,32 @@ export default function AuthScreen() {
         });
         posthogLogs.authenticationCompleted("google_sso", authenticationFlow);
         router.replace("/home");
-      } else if (pendingSignUp?.status === "missing_requirements") {
+      } else if (result.signUp?.status === "missing_requirements") {
         setError("We couldn’t finish setting up your account. Try signing up with email.");
+      } else if (result.authSessionResult?.type === "cancel" || result.authSessionResult?.type === "dismiss") {
+        console.log("[Google Auth] User dismissed or cancelled authentication browser.");
+      } else {
+        const errorDesc =
+          (result.signIn as any)?.firstFactorVerification?.error?.message ||
+          result.authSessionResult?.type ||
+          "Session not created";
+        setError(`Google sign-in incomplete: ${errorDesc}. You can also sign in with Email & Password.`);
       }
     } catch (caughtError) {
+      console.error("[Google Auth Error]", caughtError);
+      const rawMsg = caughtError instanceof Error ? caughtError.message : String(caughtError);
+      if (
+        rawMsg.toLowerCase().includes("cancel") ||
+        rawMsg.toLowerCase().includes("dismiss") ||
+        rawMsg.includes("SIGN_IN_CANCELLED") ||
+        rawMsg.includes("-5")
+      ) {
+        return;
+      }
       setError(
         caughtError instanceof Error
           ? caughtError.message
-          : "Unable to continue with Google. Please try again.",
+          : "Unable to continue with Google. Please try again or use Email.",
       );
     } finally {
       setIsGoogleBusy(false);
@@ -435,9 +472,11 @@ export default function AuthScreen() {
     clearMessages();
     setIsAppleBusy(true);
     try {
+      const redirectUrl = Linking.createURL("sso-callback");
       const { createdSessionId, setActive, signUp: pendingSignUp } = await startSSOFlow({
         strategy: "oauth_apple",
-        unsafeMetadata: isSignUp ? { fullName: fullName.trim() } : undefined,
+        redirectUrl,
+        unsafeMetadata: isSignUp && fullName.trim() ? { fullName: fullName.trim() } : undefined,
       });
       if (createdSessionId) {
         if (setActive) {
@@ -454,6 +493,15 @@ export default function AuthScreen() {
         setError("We couldn’t finish setting up your account. Try signing up with email.");
       }
     } catch (caughtError) {
+      const rawMsg = caughtError instanceof Error ? caughtError.message : String(caughtError);
+      if (
+        rawMsg.toLowerCase().includes("cancel") ||
+        rawMsg.toLowerCase().includes("dismiss") ||
+        rawMsg.includes("SIGN_IN_CANCELLED") ||
+        rawMsg.includes("-5")
+      ) {
+        return;
+      }
       setError(
         caughtError instanceof Error
           ? caughtError.message

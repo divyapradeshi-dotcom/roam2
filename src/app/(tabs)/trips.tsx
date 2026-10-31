@@ -4,7 +4,7 @@ import { Image } from "expo-image";
 import { router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LineIcon } from "@/components/roam-ui";
-import { useBookings, type ConfirmedBooking } from "@/lib/bookings";
+import { refreshBookings, useBookings, type ConfirmedBooking } from "@/lib/bookings";
 import { posthog } from "@/lib/posthog";
 
 function BookingItem({ booking }: { booking: ConfirmedBooking }) {
@@ -30,6 +30,13 @@ function BookingItem({ booking }: { booking: ConfirmedBooking }) {
           <View style={styles.confirmedBadge}>
             <Text style={styles.confirmedText}>Confirmed</Text>
           </View>
+          {Boolean(booking.couponCode) && (
+            <View style={styles.couponBadge}>
+              <Text style={styles.couponText}>
+                🏷️ {booking.couponCode} (−${booking.discountAmount || 0})
+              </Text>
+            </View>
+          )}
           <View style={styles.testModeBadge}>
             <Text style={styles.testModeText}>Test Mode</Text>
           </View>
@@ -68,6 +75,12 @@ export default function TripsScreen() {
   const bookings = useBookings();
 
   useEffect(() => {
+    refreshBookings();
+  }, []);
+
+  console.log("[TripsScreen] Bookings count:", bookings.length);
+
+  useEffect(() => {
     posthog?.capture("trips_viewed", {
       has_bookings: bookings.length > 0,
       booking_count: bookings.length,
@@ -100,7 +113,8 @@ export default function TripsScreen() {
           <FlatList
             contentContainerStyle={styles.listContent}
             data={bookings}
-            keyExtractor={(item) => item.orderId}
+            extraData={bookings.length}
+            keyExtractor={(item, index) => item.id || item.orderId || String(index)}
             renderItem={({ item }) => <BookingItem booking={item} />}
             showsVerticalScrollIndicator={false}
           />
@@ -200,6 +214,17 @@ const styles = StyleSheet.create({
   },
   confirmedText: {
     color: "#176B4B",
+    fontFamily: "Manrope_700Bold",
+    fontSize: 11,
+  },
+  couponBadge: {
+    backgroundColor: "#E8F8EE",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+  },
+  couponText: {
+    color: "#166534",
     fontFamily: "Manrope_700Bold",
     fontSize: 11,
   },

@@ -55,6 +55,8 @@ app.post("/api/orders", async (req, res) => {
       nights = 1,
       pricePerNight = 250,
       cleaningFee = 0,
+      discountAmount = 0,
+      couponCode = "",
       guestName = "Guest",
       guestEmail = "guest@roam.com",
     } = req.body;
@@ -62,8 +64,10 @@ app.post("/api/orders", async (req, res) => {
     const parsedNights = Math.max(parseInt(nights, 10) || 1, 1);
     const parsedPrice = Math.max(parseFloat(pricePerNight) || 0, 0);
     const parsedCleaning = Math.max(parseFloat(cleaningFee) || 0, 0);
+    const parsedDiscount = Math.max(parseFloat(discountAmount) || 0, 0);
 
-    const totalAmount = parsedPrice * parsedNights + parsedCleaning;
+    const subtotal = parsedPrice * parsedNights + parsedCleaning;
+    const totalAmount = Math.max(subtotal - parsedDiscount, 1);
     if (totalAmount <= 0) {
       return res.status(400).json({ success: false, error: "Invalid booking amount." });
     }

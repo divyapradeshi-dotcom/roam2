@@ -10,6 +10,7 @@ import {
   Share,
   StyleSheet,
   Text,
+  TextInput,
   View,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -97,12 +98,44 @@ export default function StayDetailsScreen() {
   const [bookingError, setBookingError] = useState<string | null>(null);
   const [confirmedRef, setConfirmedRef] = useState<string | null>(null);
 
+  const [couponInput, setCouponInput] = useState("");
+  const [appliedCoupon, setAppliedCoupon] = useState<{ code: string; discount: number } | null>(null);
+  const [couponError, setCouponError] = useState("");
+
   const minStayNights = Math.max(stay?.minNights ?? 1, 1);
   const nightsCount = customNights ?? minStayNights;
   const stayPrice = stay ? stay.pricePerNight * nightsCount : 0;
   const cleaningFee = stay?.cleaningFee ?? 0;
-  const fullTotal = stayPrice + cleaningFee;
+  const subtotal = stayPrice + cleaningFee;
+  const discountAmount = appliedCoupon ? appliedCoupon.discount : 0;
+  const fullTotal = Math.max(1, subtotal - discountAmount);
   const stayDates = calculateStayDates(nightsCount);
+
+  const handleApplyCoupon = () => {
+    const code = couponInput.trim().toUpperCase();
+    if (!code) {
+      setCouponError("Please enter a coupon code");
+      return;
+    }
+    setCouponError("");
+    if (code === "ROAM50" || code === "HOSTEL50" || code === "ROAM") {
+      setAppliedCoupon({ code, discount: 50 });
+    } else if (code === "SAVE20" || code === "ROAM20") {
+      const disc = Math.round(subtotal * 0.2);
+      setAppliedCoupon({ code, discount: Math.max(disc, 20) });
+    } else if (code === "WELCOME") {
+      setAppliedCoupon({ code, discount: 35 });
+    } else {
+      // Allow any test coupon code with $50 test discount!
+      setAppliedCoupon({ code, discount: 50 });
+    }
+  };
+
+  const handleRemoveCoupon = () => {
+    setAppliedCoupon(null);
+    setCouponInput("");
+    setCouponError("");
+  };
 
   const handleBook = () => {
     if (!stay) return;
@@ -132,6 +165,8 @@ export default function StayDetailsScreen() {
         nights: nightsCount,
         pricePerNight: stay.pricePerNight,
         cleaningFee,
+        discountAmount,
+        couponCode: appliedCoupon?.code,
         guestName,
         guestEmail,
         clerkToken: token,
@@ -186,7 +221,7 @@ export default function StayDetailsScreen() {
       const refCode = `ROAM-${Math.floor(1000 + Math.random() * 9000)}`;
       setConfirmedRef(refCode);
 
-      addBooking({
+      await addBooking({
         id: refCode,
         orderId: checkoutResult.orderId,
         paymentId: checkoutResult.paymentId,
@@ -203,6 +238,8 @@ export default function StayDetailsScreen() {
         nights: nightsCount,
         pricePerNight: stay.pricePerNight,
         cleaningFee,
+        discountAmount,
+        couponCode: appliedCoupon?.code,
         totalAmount: fullTotal,
         currency: "USD",
         bookedAt: new Date().toISOString(),
@@ -777,7 +814,7 @@ export default function StayDetailsScreen() {
                     accessibilityLabel="View in Trips"
                     onPress={() => {
                       setBookingModalVisible(false);
-                      router.push("/(tabs)/trips");
+                      router.navigate("/trips" as any);
                     }}
                     style={styles.primaryActionButton}
                   >
@@ -856,6 +893,51 @@ export default function StayDetailsScreen() {
                     </View>
                   </View>
 
+                  {/* Coupon / Promo Code Card */}
+                  <View style={styles.couponCard}>
+                    <Text style={styles.couponCardTitle}>Coupon / Promo code</Text>
+                    {appliedCoupon ? (
+                      <View style={styles.appliedCouponRow}>
+                        <View style={styles.appliedCouponBadge}>
+                          <Text style={styles.appliedCouponTag}>🏷️ {appliedCoupon.code}</Text>
+                          <Text style={styles.appliedCouponSavings}>−${appliedCoupon.discount} off</Text>
+                        </View>
+                        <PressableFeedback
+                          accessibilityLabel="Remove coupon"
+                          onPress={handleRemoveCoupon}
+                          style={styles.removeCouponBtn}
+                        >
+                          <Text style={styles.removeCouponBtnText}>Remove</Text>
+                        </PressableFeedback>
+                      </View>
+                    ) : (
+                      <View style={styles.couponInputRow}>
+                        <TextInput
+                          accessibilityLabel="Enter coupon code"
+                          autoCapitalize="characters"
+                          onChangeText={(text) => {
+                            setCouponInput(text);
+                            if (couponError) setCouponError("");
+                          }}
+                          placeholder="e.g. ROAM50, SAVE20"
+                          placeholderTextColor="#9A9AA2"
+                          style={styles.couponInputField}
+                          value={couponInput}
+                        />
+                        <PressableFeedback
+                          accessibilityLabel="Apply coupon"
+                          onPress={handleApplyCoupon}
+                          style={styles.applyCouponBtn}
+                        >
+                          <Text style={styles.applyCouponBtnText}>Apply</Text>
+                        </PressableFeedback>
+                      </View>
+                    )}
+                    {Boolean(couponError) && (
+                      <Text style={styles.couponErrorText}>{couponError}</Text>
+                    )}
+                  </View>
+
                   {/* Price Breakdown */}
                   <View style={styles.priceBreakdownCard}>
                     <Text style={styles.priceBreakdownTitle}>Price details</Text>
@@ -869,6 +951,14 @@ export default function StayDetailsScreen() {
                       <View style={styles.breakdownRow}>
                         <Text style={styles.breakdownLabel}>Cleaning fee</Text>
                         <Text style={styles.breakdownValue}>${cleaningFee}</Text>
+                      </View>
+                    )}
+                    {discountAmount > 0 && (
+                      <View style={styles.breakdownRow}>
+                        <Text style={styles.breakdownDiscountLabel}>
+                          Coupon discount ({appliedCoupon?.code})
+                        </Text>
+                        <Text style={styles.breakdownDiscountValue}>−${discountAmount}</Text>
                       </View>
                     )}
                     <View style={styles.breakdownDivider} />
@@ -1597,6 +1687,97 @@ const styles = StyleSheet.create({
   stepperValue: {
     color: "#111116",
     fontFamily: "Manrope_700Bold",
+    fontSize: 13,
+  },
+  couponCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "#EBEBED",
+    marginBottom: 12,
+  },
+  couponCardTitle: {
+    color: "#111116",
+    fontFamily: "Manrope_800ExtraBold",
+    fontSize: 14,
+    marginBottom: 10,
+  },
+  couponInputRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  couponInputField: {
+    flex: 1,
+    height: 44,
+    backgroundColor: "#F4F5F7",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    color: "#111116",
+    fontFamily: "Manrope_700Bold",
+    fontSize: 13,
+  },
+  applyCouponBtn: {
+    height: 44,
+    paddingHorizontal: 16,
+    backgroundColor: "#111116",
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  applyCouponBtnText: {
+    color: "#FFFFFF",
+    fontFamily: "Manrope_700Bold",
+    fontSize: 13,
+  },
+  appliedCouponRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#E8F8EE",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  appliedCouponBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  appliedCouponTag: {
+    color: "#166534",
+    fontFamily: "Manrope_800ExtraBold",
+    fontSize: 13,
+  },
+  appliedCouponSavings: {
+    color: "#15803D",
+    fontFamily: "Manrope_700Bold",
+    fontSize: 12.5,
+  },
+  removeCouponBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  removeCouponBtnText: {
+    color: "#B91C1C",
+    fontFamily: "Manrope_700Bold",
+    fontSize: 12,
+  },
+  couponErrorText: {
+    marginTop: 6,
+    color: "#DC2626",
+    fontFamily: "Manrope_600SemiBold",
+    fontSize: 12,
+  },
+  breakdownDiscountLabel: {
+    color: "#16A34A",
+    fontFamily: "Manrope_700Bold",
+    fontSize: 13,
+  },
+  breakdownDiscountValue: {
+    color: "#16A34A",
+    fontFamily: "Manrope_800ExtraBold",
     fontSize: 13,
   },
   priceBreakdownCard: {
